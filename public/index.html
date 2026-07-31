@@ -12,31 +12,32 @@
         }
 
         body {
-            background-color: #0d0f12;
-            color: #c9d1d9;
+            background-color: #0c0d10;
+            color: #e6edf3;
             font-family: 'Courier New', Courier, monospace;
             display: flex;
             align-items: center;
             justify-content: center;
             min-height: 100vh;
+            padding: 20px;
         }
 
-        .dashboard-card {
-            background: #16191e;
-            border: 2px solid #2a2f38;
-            border-radius: 12px;
+        .server-card {
+            background: #161b22;
+            border: 2px solid #30363d;
+            border-radius: 10px;
             padding: 32px;
-            width: 90%;
-            max-width: 500px;
+            width: 100%;
+            max-width: 480px;
             text-align: center;
-            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.7);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.8);
         }
 
         h1 {
             color: #58a6ff;
             font-size: 26px;
-            margin-bottom: 8px;
             letter-spacing: 2px;
+            margin-bottom: 6px;
             text-transform: uppercase;
         }
 
@@ -60,74 +61,80 @@
             margin-bottom: 28px;
         }
 
-        .status-dot {
+        .dot {
             width: 10px;
             height: 10px;
             background-color: #3fb950;
             border-radius: 50%;
-            box-shadow: 0 0 10px #3fb950;
+            box-shadow: 0 0 8px #3fb950;
         }
 
-        .info-grid {
-            background: #0d0f12;
-            border: 1px solid #2a2f38;
-            border-radius: 8px;
+        .info-box {
+            background: #0d1117;
+            border: 1px solid #21262d;
+            border-radius: 6px;
             padding: 16px;
             font-size: 13px;
             text-align: left;
             display: flex;
             flex-direction: column;
-            gap: 10px;
+            gap: 12px;
         }
 
         .info-row {
             display: flex;
             justify-content: space-between;
+            align-items: center;
+        }
+
+        .info-label {
             color: #8b949e;
         }
 
-        .info-row strong {
-            color: #e0e6ed;
+        .info-value {
+            color: #f0f6fc;
+            font-weight: bold;
         }
 
-        code {
+        .code-tag {
             color: #ffd700;
             background: rgba(255, 215, 0, 0.1);
             padding: 2px 6px;
             border-radius: 4px;
+            font-family: inherit;
         }
     </style>
 </head>
 <body>
 
-    <div class="dashboard-card">
+    <div class="server-card">
         <h1>JergBServer</h1>
-        <p class="subtitle">Official Backend Service for JergBuilder</p>
+        <p class="subtitle">Official Node.js Backend for JergBuilder</p>
 
         <div class="status-badge">
-            <span class="status-dot"></span> Server Active
+            <span class="dot"></span> Online & Listening
         </div>
 
-        <div class="info-grid">
+        <div class="info-box">
             <div class="info-row">
-                <span>Protocol:</span>
-                <strong>WebSockets / Socket.io</strong>
+                <span class="info-label">Protocol:</span>
+                <span class="info-value">Socket.io / WebSockets</span>
             </div>
             <div class="info-row">
-                <span>Default Seed:</span>
-                <strong><code>JergBuilder_Default</code></strong>
+                <span class="info-label">World Seed:</span>
+                <span class="info-value"><span class="code-tag">JergBuilder_Default</span></span>
             </div>
             <div class="info-row">
-                <span>World Scale:</span>
-                <strong>32x32 Medium Map</strong>
+                <span class="info-label">Map Size:</span>
+                <span class="info-value">32 x 32 Voxel Mesh</span>
             </div>
             <div class="info-row">
-                <span>Player Model:</span>
-                <strong><code>jergplr.glb</code></strong>
+                <span class="info-label">Player Model:</span>
+                <span class="info-value"><span class="code-tag">jergplr.glb</span></span>
             </div>
             <div class="info-row">
-                <span>Target Launch:</span>
-                <strong>August 6, 2026</strong>
+                <span class="info-label">Target Release:</span>
+                <span class="info-value">August 6, 2026</span>
             </div>
         </div>
     </div>
