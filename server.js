@@ -5,74 +5,54 @@ const { Server } = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
-
-const io = new Server(server, {
-    cors: {
-        origin: "*", // Allows connections from JergBuilder WebGL client
-        methods: ["GET", "POST"]
-    }
-});
+const io = new Server(server, { cors: { origin: "*" } });
 
 const PORT = process.env.PORT || 3000;
-
-// Raw URL to the 3D player model in GitHub repository
 const PLAYER_MODEL_URL = 'https://raw.githubusercontent.com/jergan-studio/JergBServer/main/jergplr.glb';
 
-// Default World Configuration
-const MAP_SIZE = 32;
-const WATER_LEVEL = 2;
-const WORLD_SEED = 'JergBuilder_Default';
-
-// In-Memory Server State
 const players = {};
-const mapEdits = {}; // Tracks modified, placed, or broken blocks: { "x,y,z": { type, material } }
+const mapEdits = {};
 
-// Serve static dashboard files from public folder
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Root Route Fallback
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
-
-// ==========================================
-// SOCKET MULTIPLAYER NETWORKING
-// ==========================================
 io.on('connection', (socket) => {
-    console.log(`[+] Player connected: ${socket.id}`);
+    console.log(`[+] Socket Connected: ${socket.id}`);
 
-    // 1. Send seed, configuration, and past block edits to the newly connected player
+    // Send world state to new connection
     socket.emit('initWorld', {
-        seed: WORLD_SEED,
-        mapSize: MAP_SIZE,
-        waterLevel: WATER_LEVEL,
+        seed: 'JergBuilder_Default',
+        mapSize: 32,
         mapEdits: mapEdits,
         modelUrl: PLAYER_MODEL_URL
     });
 
-    // 2. Handle Player Join
+    // 1. Handle Player Join with Username
     socket.on('playerJoin', (data) => {
+        const username = data.username || `Player_${socket.id.substring(0, 4)}`;
+        
         players[socket.id] = {
             id: socket.id,
+            username: username,
             position: data.position || { x: 0, y: 15, z: 0 },
-            rotation: data.rotation || { yaw: 0, pitch: 0 },
-            modelUrl: PLAYER_MODEL_URL
+            rotation: data.rotation || { yaw: 0, pitch: 0 }
         };
 
-        // Send existing active players to the newly connected player
+        // Send existing players list to joined client
         socket.emit('currentPlayers', players);
 
-        // Broadcast new player to all existing clients
+        // Broadcast new player to all others
         socket.broadcast.emit('playerJoined', players[socket.id]);
+
+        // Server Broadcast Chat Message
+        io.emit('chatMessage', { sender: 'Server', text: `${username} joined the game!` });
     });
 
-    // 3. Sync Player Movement & Look Rotation
+    // 2. Handle Player Movement
     socket.on('playerMove', (data) => {
         if (players[socket.id]) {
             players[socket.id].position = data.position;
             players[socket.id].rotation = data.rotation;
 
-            // Relay position update to other players
             socket.broadcast.emit('playerMoved', {
                 id: socket.id,
                 position: data.position,
@@ -81,33 +61,37 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 4. Broadcast & Save Block Placements
-    socket.on('blockPlace', (data) => {
-        const key = `${data.x},${data.y},${data.z}`;
-        mapEdits[key] = { 
-            type: 'place', 
-            material: data.material || 'grass' 
-        };
+    // 3. Handle In-Game Chat Messages
+    socket.on('sendChat', (messageText) => {
+        const player = players[socket.id];
+        if (player && messageText.trim() !== "") {
+            io.emit('chatMessage', {
+                sender: player.username,
+                text: messageText
+            });
+        }
+    });
 
+    // 4. Handle Block Modifications
+    socket.on('blockPlace', (data) => {
+        mapEdits[`${data.x},${data.y},${data.z}`] = { type: 'place', material: data.material };
         socket.broadcast.emit('blockPlaced', data);
     });
 
-    // 5. Broadcast & Save Block Destruction
     socket.on('blockBreak', (data) => {
-        const key = `${data.x},${data.y},${data.z}`;
-        mapEdits[key] = { type: 'break' };
-
+        mapEdits[`${data.x},${data.y},${data.z}`] = { type: 'break' };
         socket.broadcast.emit('blockBroken', data);
     });
 
-    // 6. Handle Disconnection
+    // 5. Handle Disconnect
     socket.on('disconnect', () => {
-        console.log(`[-] Player disconnected: ${socket.id}`);
-        delete players[socket.id];
-        io.emit('playerDisconnected', socket.id);
+        const player = players[socket.id];
+        if (player) {
+            io.emit('chatMessage', { sender: 'Server', text: `${player.username} left the game.` });
+            delete players[socket.id];
+            io.emit('playerDisconnected', socket.id);
+        }
     });
 });
 
-server.listen(PORT, () => {
-    console.log(`🚀 JergBServer listening on port ${PORT}`);
-});
+server.listen(PORT, () => console.log(`🚀 JergBServer listening on port ${PORT}`));
