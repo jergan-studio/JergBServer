@@ -5,104 +5,101 @@ const { Server } = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
+
+// Enable CORS so JergBuilder clients on any domain can connect
+const io = new Server(server, {
+    cors: {
+        origin: "*",
+        methods: ["GET", "POST"]
+    }
+});
 
 const PORT = process.env.PORT || 3000;
-const PLAYER_MODEL_URL = 'https://raw.githubusercontent.com/jergan-studio/JergBServer/main/jergplr.glb';
 
-// Active Server Rooms System
-// Structure: { roomId: { id, name, host, seed, maxPlayers, players: {}, mapEdits: {} } }
-const servers = {};
-
-app.use(express.static(path.join(__dirname, 'public')));
-
-// Default lobby room created on start
-servers['lobby-main'] = {
-    id: 'lobby-main',
-    name: 'Official Main Server',
-    host: 'ServerAdmin',
-    seed: 'JergBuilder_Official',
+// ==========================================
+// SERVER CONFIGURATION TEMPLATE
+// ==========================================
+const SERVER_CONFIG = {
+    serverName: "JergBuilder Dedicated Server",
+    seed: "JergBuilder_Default",
+    mapSize: 32,
+    waterLevel: 2,
     maxPlayers: 20,
-    players: {},
-    mapEdits: {}
+    playerModelUrl: 'https://raw.githubusercontent.com/jergan-studio/JergBServer/main/jergplr.glb'
 };
 
+// ==========================================
+// IN-MEMORY WORLD STATE
+// ==========================================
+const players = {};
+const mapEdits = {}; // Saved block modifications: { "x,y,z": { type: 'place'/'break', material: 'grass' } }
+
+// Serve static status page from the /public directory
+app.use(express.static(path.join(__dirname, 'public')));
+
+// API endpoint for clients/launchers to query server info
+app.get('/api/info', (req, res) => {
+    res.json({
+        name: SERVER_CONFIG.serverName,
+        seed: SERVER_CONFIG.seed,
+        onlinePlayers: Object.keys(players).length,
+        maxPlayers: SERVER_CONFIG.maxPlayers,
+        mapSize: SERVER_CONFIG.mapSize
+    });
+});
+
+// ==========================================
+// SOCKET MULTIPLAYER LOGIC
+// ==========================================
 io.on('connection', (socket) => {
-    console.log(`[+] Socket connected: ${socket.id}`);
+    console.log(`[+] Player connected: ${socket.id}`);
 
-    // 1. Send public server list to client on connect
-    socket.emit('serverListUpdate', getPublicServerList());
-
-    // 2. Create a Custom Multiplayer Server Room
-    socket.on('createServer', (data) => {
-        const roomId = `srv_${Date.now()}`;
-        servers[roomId] = {
-            id: roomId,
-            name: data.serverName || `${data.username}'s World`,
-            host: data.username,
-            seed: data.seed || 'JergSeed',
-            maxPlayers: data.maxPlayers || 10,
-            players: {},
-            mapEdits: {}
-        };
-
-        socket.emit('serverCreated', { roomId: roomId });
-        io.emit('serverListUpdate', getPublicServerList());
+    // 1. Send initial world configuration & saved map edits to new client
+    socket.emit('initWorld', {
+        serverName: SERVER_CONFIG.serverName,
+        seed: SERVER_CONFIG.seed,
+        mapSize: SERVER_CONFIG.mapSize,
+        waterLevel: SERVER_CONFIG.waterLevel,
+        mapEdits: mapEdits,
+        modelUrl: SERVER_CONFIG.playerModelUrl
     });
 
-    // 3. Join a Multiplayer Server Room
-    socket.on('joinServer', (data) => {
-        const room = servers[data.roomId];
-        if (!room) {
-            return socket.emit('joinError', 'Server room not found.');
+    // 2. Handle Player Joining
+    socket.on('playerJoin', (data) => {
+        if (Object.keys(players).length >= SERVER_CONFIG.maxPlayers) {
+            socket.emit('kick', 'Server is full!');
+            return;
         }
 
-        if (Object.keys(room.players).length >= room.maxPlayers) {
-            return socket.emit('joinError', 'Server room is full.');
-        }
+        const username = data.username || `Player_${socket.id.substring(0, 4)}`;
 
-        // Leave previous socket room if any
-        if (socket.currentRoom) {
-            leaveRoom(socket);
-        }
-
-        socket.join(data.roomId);
-        socket.currentRoom = data.roomId;
-
-        const playerInfo = {
+        players[socket.id] = {
             id: socket.id,
-            username: data.username || 'Builder',
-            position: { x: 0, y: 15, z: 0 },
-            rotation: { yaw: 0, pitch: 0 }
+            username: username,
+            position: data.position || { x: 0, y: 15, z: 0 },
+            rotation: data.rotation || { yaw: 0, pitch: 0 }
         };
 
-        room.players[socket.id] = playerInfo;
+        // Send existing player list to newly joined player
+        socket.emit('currentPlayers', players);
 
-        // Send world init payload to player
-        socket.emit('initWorld', {
-            roomId: room.id,
-            seed: room.seed,
-            mapEdits: room.mapEdits,
-            modelUrl: PLAYER_MODEL_URL,
-            players: room.players
+        // Broadcast new player to all existing players
+        socket.broadcast.emit('playerJoined', players[socket.id]);
+
+        // System message in chat
+        io.emit('chatMessage', {
+            sender: 'Server',
+            text: `${username} joined the game!`
         });
-
-        // Notify others in room
-        socket.to(room.id).emit('playerJoined', playerInfo);
-        io.to(room.id).emit('chatMessage', { sender: 'System', text: `${playerInfo.username} joined the server.` });
-
-        // Update overall directory
-        io.emit('serverListUpdate', getPublicServerList());
     });
 
-    // 4. Relay Player Movement
+    // 3. Handle Real-Time Player Movement & Rotation
     socket.on('playerMove', (data) => {
-        const room = servers[socket.currentRoom];
-        if (room && room.players[socket.id]) {
-            room.players[socket.id].position = data.position;
-            room.players[socket.id].rotation = data.rotation;
+        if (players[socket.id]) {
+            players[socket.id].position = data.position;
+            players[socket.id].rotation = data.rotation;
 
-            socket.to(socket.currentRoom).emit('playerMoved', {
+            socket.broadcast.emit('playerMoved', {
                 id: socket.id,
                 position: data.position,
                 rotation: data.rotation
@@ -110,69 +107,55 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 5. Chat System Inside Room
-    socket.on('sendChat', (text) => {
-        const room = servers[socket.currentRoom];
-        if (room && room.players[socket.id]) {
-            io.to(socket.currentRoom).emit('chatMessage', {
-                sender: room.players[socket.id].username,
-                text: text
+    // 4. Handle In-Game Chat
+    socket.on('sendChat', (messageText) => {
+        const player = players[socket.id];
+        if (player && messageText && messageText.trim() !== "") {
+            io.emit('chatMessage', {
+                sender: player.username,
+                text: messageText.trim().substring(0, 120) // Limit length
             });
         }
     });
 
-    // 6. Sync Block Placement & Destruction
+    // 5. Sync Block Placements
     socket.on('blockPlace', (data) => {
-        const room = servers[socket.currentRoom];
-        if (room) {
-            room.mapEdits[`${data.x},${data.y},${data.z}`] = { type: 'place', material: data.material };
-            socket.to(socket.currentRoom).emit('blockPlaced', data);
-        }
+        const key = `${data.x},${data.y},${data.z}`;
+        mapEdits[key] = {
+            type: 'place',
+            material: data.material || 'grass'
+        };
+
+        socket.broadcast.emit('blockPlaced', data);
     });
 
+    // 6. Sync Block Destruction
     socket.on('blockBreak', (data) => {
-        const room = servers[socket.currentRoom];
-        if (room) {
-            room.mapEdits[`${data.x},${data.y},${data.z}`] = { type: 'break' };
-            socket.to(socket.currentRoom).emit('blockBroken', data);
-        }
+        const key = `${data.x},${data.y},${data.z}`;
+        mapEdits[key] = { type: 'break' };
+
+        socket.broadcast.emit('blockBroken', data);
     });
 
-    // 7. Handle Disconnections
+    // 7. Handle Disconnection
     socket.on('disconnect', () => {
-        leaveRoom(socket);
+        const player = players[socket.id];
+        if (player) {
+            console.log(`[-] Player disconnected: ${player.username} (${socket.id})`);
+            io.emit('chatMessage', {
+                sender: 'Server',
+                text: `${player.username} left the game.`
+            });
+            delete players[socket.id];
+            io.emit('playerDisconnected', socket.id);
+        }
     });
 });
 
-function leaveRoom(socket) {
-    const roomId = socket.currentRoom;
-    if (roomId && servers[roomId]) {
-        const room = servers[roomId];
-        const player = room.players[socket.id];
-        
-        if (player) {
-            delete room.players[socket.id];
-            socket.to(roomId).emit('playerDisconnected', socket.id);
-            io.to(roomId).emit('chatMessage', { sender: 'System', text: `${player.username} left the server.` });
-        }
-
-        // Clean up empty custom servers (keep main lobby active)
-        if (Object.keys(room.players).length === 0 && roomId !== 'lobby-main') {
-            delete servers[roomId];
-        }
-
-        io.emit('serverListUpdate', getPublicServerList());
-    }
-}
-
-function getPublicServerList() {
-    return Object.values(servers).map(s => ({
-        id: s.id,
-        name: s.name,
-        host: s.host,
-        playerCount: Object.keys(s.players).length,
-        maxPlayers: s.maxPlayers
-    }));
-}
-
-server.listen(PORT, () => console.log(`🚀 JergBServer Multiplayer Directory active on port ${PORT}`));
+server.listen(PORT, () => {
+    console.log(`===========================================`);
+    console.log(`🚀 JergBuilder Server Active on Port ${PORT}`);
+    console.log(`   Name: ${SERVER_CONFIG.serverName}`);
+    console.log(`   Seed: ${SERVER_CONFIG.seed}`);
+    console.log(`===========================================`);
+});
