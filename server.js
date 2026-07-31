@@ -10,50 +10,99 @@ const io = new Server(server, { cors: { origin: "*" } });
 const PORT = process.env.PORT || 3000;
 const PLAYER_MODEL_URL = 'https://raw.githubusercontent.com/jergan-studio/JergBServer/main/jergplr.glb';
 
-const players = {};
-const mapEdits = {};
+// Active Server Rooms System
+// Structure: { roomId: { id, name, host, seed, maxPlayers, players: {}, mapEdits: {} } }
+const servers = {};
 
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Default lobby room created on start
+servers['lobby-main'] = {
+    id: 'lobby-main',
+    name: 'Official Main Server',
+    host: 'ServerAdmin',
+    seed: 'JergBuilder_Official',
+    maxPlayers: 20,
+    players: {},
+    mapEdits: {}
+};
+
 io.on('connection', (socket) => {
-    console.log(`[+] Socket Connected: ${socket.id}`);
+    console.log(`[+] Socket connected: ${socket.id}`);
 
-    // Send world state to new connection
-    socket.emit('initWorld', {
-        seed: 'JergBuilder_Default',
-        mapSize: 32,
-        mapEdits: mapEdits,
-        modelUrl: PLAYER_MODEL_URL
-    });
+    // 1. Send public server list to client on connect
+    socket.emit('serverListUpdate', getPublicServerList());
 
-    // 1. Handle Player Join with Username
-    socket.on('playerJoin', (data) => {
-        const username = data.username || `Player_${socket.id.substring(0, 4)}`;
-        
-        players[socket.id] = {
-            id: socket.id,
-            username: username,
-            position: data.position || { x: 0, y: 15, z: 0 },
-            rotation: data.rotation || { yaw: 0, pitch: 0 }
+    // 2. Create a Custom Multiplayer Server Room
+    socket.on('createServer', (data) => {
+        const roomId = `srv_${Date.now()}`;
+        servers[roomId] = {
+            id: roomId,
+            name: data.serverName || `${data.username}'s World`,
+            host: data.username,
+            seed: data.seed || 'JergSeed',
+            maxPlayers: data.maxPlayers || 10,
+            players: {},
+            mapEdits: {}
         };
 
-        // Send existing players list to joined client
-        socket.emit('currentPlayers', players);
-
-        // Broadcast new player to all others
-        socket.broadcast.emit('playerJoined', players[socket.id]);
-
-        // Server Broadcast Chat Message
-        io.emit('chatMessage', { sender: 'Server', text: `${username} joined the game!` });
+        socket.emit('serverCreated', { roomId: roomId });
+        io.emit('serverListUpdate', getPublicServerList());
     });
 
-    // 2. Handle Player Movement
-    socket.on('playerMove', (data) => {
-        if (players[socket.id]) {
-            players[socket.id].position = data.position;
-            players[socket.id].rotation = data.rotation;
+    // 3. Join a Multiplayer Server Room
+    socket.on('joinServer', (data) => {
+        const room = servers[data.roomId];
+        if (!room) {
+            return socket.emit('joinError', 'Server room not found.');
+        }
 
-            socket.broadcast.emit('playerMoved', {
+        if (Object.keys(room.players).length >= room.maxPlayers) {
+            return socket.emit('joinError', 'Server room is full.');
+        }
+
+        // Leave previous socket room if any
+        if (socket.currentRoom) {
+            leaveRoom(socket);
+        }
+
+        socket.join(data.roomId);
+        socket.currentRoom = data.roomId;
+
+        const playerInfo = {
+            id: socket.id,
+            username: data.username || 'Builder',
+            position: { x: 0, y: 15, z: 0 },
+            rotation: { yaw: 0, pitch: 0 }
+        };
+
+        room.players[socket.id] = playerInfo;
+
+        // Send world init payload to player
+        socket.emit('initWorld', {
+            roomId: room.id,
+            seed: room.seed,
+            mapEdits: room.mapEdits,
+            modelUrl: PLAYER_MODEL_URL,
+            players: room.players
+        });
+
+        // Notify others in room
+        socket.to(room.id).emit('playerJoined', playerInfo);
+        io.to(room.id).emit('chatMessage', { sender: 'System', text: `${playerInfo.username} joined the server.` });
+
+        // Update overall directory
+        io.emit('serverListUpdate', getPublicServerList());
+    });
+
+    // 4. Relay Player Movement
+    socket.on('playerMove', (data) => {
+        const room = servers[socket.currentRoom];
+        if (room && room.players[socket.id]) {
+            room.players[socket.id].position = data.position;
+            room.players[socket.id].rotation = data.rotation;
+
+            socket.to(socket.currentRoom).emit('playerMoved', {
                 id: socket.id,
                 position: data.position,
                 rotation: data.rotation
@@ -61,37 +110,69 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 3. Handle In-Game Chat Messages
-    socket.on('sendChat', (messageText) => {
-        const player = players[socket.id];
-        if (player && messageText.trim() !== "") {
-            io.emit('chatMessage', {
-                sender: player.username,
-                text: messageText
+    // 5. Chat System Inside Room
+    socket.on('sendChat', (text) => {
+        const room = servers[socket.currentRoom];
+        if (room && room.players[socket.id]) {
+            io.to(socket.currentRoom).emit('chatMessage', {
+                sender: room.players[socket.id].username,
+                text: text
             });
         }
     });
 
-    // 4. Handle Block Modifications
+    // 6. Sync Block Placement & Destruction
     socket.on('blockPlace', (data) => {
-        mapEdits[`${data.x},${data.y},${data.z}`] = { type: 'place', material: data.material };
-        socket.broadcast.emit('blockPlaced', data);
+        const room = servers[socket.currentRoom];
+        if (room) {
+            room.mapEdits[`${data.x},${data.y},${data.z}`] = { type: 'place', material: data.material };
+            socket.to(socket.currentRoom).emit('blockPlaced', data);
+        }
     });
 
     socket.on('blockBreak', (data) => {
-        mapEdits[`${data.x},${data.y},${data.z}`] = { type: 'break' };
-        socket.broadcast.emit('blockBroken', data);
+        const room = servers[socket.currentRoom];
+        if (room) {
+            room.mapEdits[`${data.x},${data.y},${data.z}`] = { type: 'break' };
+            socket.to(socket.currentRoom).emit('blockBroken', data);
+        }
     });
 
-    // 5. Handle Disconnect
+    // 7. Handle Disconnections
     socket.on('disconnect', () => {
-        const player = players[socket.id];
-        if (player) {
-            io.emit('chatMessage', { sender: 'Server', text: `${player.username} left the game.` });
-            delete players[socket.id];
-            io.emit('playerDisconnected', socket.id);
-        }
+        leaveRoom(socket);
     });
 });
 
-server.listen(PORT, () => console.log(`🚀 JergBServer listening on port ${PORT}`));
+function leaveRoom(socket) {
+    const roomId = socket.currentRoom;
+    if (roomId && servers[roomId]) {
+        const room = servers[roomId];
+        const player = room.players[socket.id];
+        
+        if (player) {
+            delete room.players[socket.id];
+            socket.to(roomId).emit('playerDisconnected', socket.id);
+            io.to(roomId).emit('chatMessage', { sender: 'System', text: `${player.username} left the server.` });
+        }
+
+        // Clean up empty custom servers (keep main lobby active)
+        if (Object.keys(room.players).length === 0 && roomId !== 'lobby-main') {
+            delete servers[roomId];
+        }
+
+        io.emit('serverListUpdate', getPublicServerList());
+    }
+}
+
+function getPublicServerList() {
+    return Object.values(servers).map(s => ({
+        id: s.id,
+        name: s.name,
+        host: s.host,
+        playerCount: Object.keys(s.players).length,
+        maxPlayers: s.maxPlayers
+    }));
+}
+
+server.listen(PORT, () => console.log(`🚀 JergBServer Multiplayer Directory active on port ${PORT}`));
