@@ -6,94 +6,81 @@ const { Server } = require('socket.io');
 const app = express();
 const server = http.createServer(app);
 
-// Enable CORS so JergBuilder clients on any domain can connect
 const io = new Server(server, {
-    cors: {
-        origin: "*",
-        methods: ["GET", "POST"]
-    }
+    cors: { origin: "*" }
 });
 
 const PORT = process.env.PORT || 3000;
+const PLAYER_MODEL_URL = 'https://raw.githubusercontent.com/jergan-studio/JergBServer/main/jergplr.glb';
 
 // ==========================================
-// SERVER CONFIGURATION TEMPLATE
+// SERVER WORLD CONFIGURATION
 // ==========================================
-const SERVER_CONFIG = {
-    serverName: "JergBuilder Dedicated Server",
-    seed: "JergBuilder_Default",
+const WORLD = {
+    seed: 'JergBuilder_Official',
     mapSize: 32,
     waterLevel: 2,
-    maxPlayers: 20,
-    playerModelUrl: 'https://raw.githubusercontent.com/jergan-studio/JergBServer/main/jergplr.glb'
+    maxPlayers: 20
 };
 
-// ==========================================
-// IN-MEMORY WORLD STATE
-// ==========================================
+// World Data Storage
 const players = {};
-const mapEdits = {}; // Saved block modifications: { "x,y,z": { type: 'place'/'break', material: 'grass' } }
+const mapEdits = {}; // Saved block changes: { "x,y,z": { type: 'place'/'break', material: 'grass' } }
 
-// Serve static status page from the /public directory
 app.use(express.static(path.join(__dirname, 'public')));
 
-// API endpoint for clients/launchers to query server info
-app.get('/api/info', (req, res) => {
+app.get('/api/serverinfo', (req, res) => {
     res.json({
-        name: SERVER_CONFIG.serverName,
-        seed: SERVER_CONFIG.seed,
-        onlinePlayers: Object.keys(players).length,
-        maxPlayers: SERVER_CONFIG.maxPlayers,
-        mapSize: SERVER_CONFIG.mapSize
+        name: "JergBuilder Dedicated Server",
+        seed: WORLD.seed,
+        online: Object.keys(players).length,
+        max: WORLD.maxPlayers,
+        size: WORLD.mapSize
     });
 });
 
 // ==========================================
-// SOCKET MULTIPLAYER LOGIC
+// SOCKET MULTIPLAYER ENGINE
 // ==========================================
 io.on('connection', (socket) => {
-    console.log(`[+] Player connected: ${socket.id}`);
+    console.log(`[+] Socket joined: ${socket.id}`);
 
-    // 1. Send initial world configuration & saved map edits to new client
+    // 1. Send seed, configuration, and all world changes on connect
     socket.emit('initWorld', {
-        serverName: SERVER_CONFIG.serverName,
-        seed: SERVER_CONFIG.seed,
-        mapSize: SERVER_CONFIG.mapSize,
-        waterLevel: SERVER_CONFIG.waterLevel,
+        seed: WORLD.seed,
+        mapSize: WORLD.mapSize,
+        waterLevel: WORLD.waterLevel,
         mapEdits: mapEdits,
-        modelUrl: SERVER_CONFIG.playerModelUrl
+        modelUrl: PLAYER_MODEL_URL
     });
 
-    // 2. Handle Player Joining
+    // 2. Handle Player Login
     socket.on('playerJoin', (data) => {
-        if (Object.keys(players).length >= SERVER_CONFIG.maxPlayers) {
-            socket.emit('kick', 'Server is full!');
+        if (Object.keys(players).length >= WORLD.maxPlayers) {
+            socket.emit('kickReason', 'Server is full!');
             return;
         }
 
-        const username = data.username || `Player_${socket.id.substring(0, 4)}`;
+        const name = data.username || `Player_${socket.id.substring(0, 4)}`;
 
         players[socket.id] = {
             id: socket.id,
-            username: username,
-            position: data.position || { x: 0, y: 15, z: 0 },
+            username: name,
+            position: data.position || { x: 0, y: 12, z: 0 },
             rotation: data.rotation || { yaw: 0, pitch: 0 }
         };
 
-        // Send existing player list to newly joined player
+        // Sync existing connected players to new client
         socket.emit('currentPlayers', players);
 
-        // Broadcast new player to all existing players
+        // Broadcast newly joined player to everyone else
         socket.broadcast.emit('playerJoined', players[socket.id]);
 
-        // System message in chat
-        io.emit('chatMessage', {
-            sender: 'Server',
-            text: `${username} joined the game!`
-        });
+        // Chat notification
+        io.emit('chatMessage', { sender: 'Server', text: `${name} connected to the server.` });
     });
 
-    // 3. Handle Real-Time Player Movement & Rotation
+    // 3. Real-Time Player Physics/Movement Sync
     socket.on('playerMove', (data) => {
         if (players[socket.id]) {
             players[socket.id].position = data.position;
@@ -107,29 +94,23 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 4. Handle In-Game Chat
-    socket.on('sendChat', (messageText) => {
-        const player = players[socket.id];
-        if (player && messageText && messageText.trim() !== "") {
-            io.emit('chatMessage', {
-                sender: player.username,
-                text: messageText.trim().substring(0, 120) // Limit length
-            });
+    // 4. In-Game Chat System
+    socket.on('sendChat', (text) => {
+        const p = players[socket.id];
+        if (p && text.trim()) {
+            io.emit('chatMessage', { sender: p.username, text: text.trim() });
         }
     });
 
-    // 5. Sync Block Placements
+    // 5. Global Block Placement (Updates server world state & relays to all)
     socket.on('blockPlace', (data) => {
         const key = `${data.x},${data.y},${data.z}`;
-        mapEdits[key] = {
-            type: 'place',
-            material: data.material || 'grass'
-        };
+        mapEdits[key] = { type: 'place', material: data.material || 'grass' };
 
         socket.broadcast.emit('blockPlaced', data);
     });
 
-    // 6. Sync Block Destruction
+    // 6. Global Block Destruction
     socket.on('blockBreak', (data) => {
         const key = `${data.x},${data.y},${data.z}`;
         mapEdits[key] = { type: 'break' };
@@ -137,25 +118,16 @@ io.on('connection', (socket) => {
         socket.broadcast.emit('blockBroken', data);
     });
 
-    // 7. Handle Disconnection
+    // 7. Disconnection Clean-Up
     socket.on('disconnect', () => {
-        const player = players[socket.id];
-        if (player) {
-            console.log(`[-] Player disconnected: ${player.username} (${socket.id})`);
-            io.emit('chatMessage', {
-                sender: 'Server',
-                text: `${player.username} left the game.`
-            });
+        const p = players[socket.id];
+        if (p) {
+            console.log(`[-] Socket disconnected: ${p.username}`);
+            io.emit('chatMessage', { sender: 'Server', text: `${p.username} disconnected.` });
             delete players[socket.id];
             io.emit('playerDisconnected', socket.id);
         }
     });
 });
 
-server.listen(PORT, () => {
-    console.log(`===========================================`);
-    console.log(`🚀 JergBuilder Server Active on Port ${PORT}`);
-    console.log(`   Name: ${SERVER_CONFIG.serverName}`);
-    console.log(`   Seed: ${SERVER_CONFIG.seed}`);
-    console.log(`===========================================`);
-});
+server.listen(PORT, () => console.log(`🚀 JergBuilder Server online on port ${PORT}`));
