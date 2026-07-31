@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>JergBServer Status</title>
+    <title>JergBServer | Server Browser</title>
     <style>
         * {
             box-sizing: border-box;
@@ -12,8 +12,8 @@
         }
 
         body {
-            background-color: #0c0d10;
-            color: #e6edf3;
+            background-color: #0d0f12;
+            color: #e0e6ed;
             font-family: 'Courier New', Courier, monospace;
             display: flex;
             align-items: center;
@@ -22,122 +22,108 @@
             padding: 20px;
         }
 
-        .server-card {
-            background: #161b22;
-            border: 2px solid #30363d;
+        .container {
+            background: #16191e;
+            border: 2px solid #2a2f38;
             border-radius: 10px;
-            padding: 32px;
+            padding: 28px;
             width: 100%;
-            max-width: 480px;
-            text-align: center;
+            max-width: 600px;
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.8);
         }
 
         h1 {
             color: #58a6ff;
-            font-size: 26px;
-            letter-spacing: 2px;
-            margin-bottom: 6px;
+            font-size: 24px;
+            text-align: center;
+            margin-bottom: 4px;
             text-transform: uppercase;
         }
 
         .subtitle {
             color: #8b949e;
-            font-size: 13px;
-            margin-bottom: 24px;
+            font-size: 12px;
+            text-align: center;
+            margin-bottom: 20px;
         }
 
-        .status-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 10px;
-            background: rgba(46, 160, 67, 0.15);
-            color: #3fb950;
-            border: 1px solid rgba(46, 160, 67, 0.4);
-            padding: 8px 18px;
-            border-radius: 20px;
-            font-weight: bold;
-            font-size: 14px;
-            margin-bottom: 28px;
-        }
-
-        .dot {
-            width: 10px;
-            height: 10px;
-            background-color: #3fb950;
-            border-radius: 50%;
-            box-shadow: 0 0 8px #3fb950;
-        }
-
-        .info-box {
-            background: #0d1117;
-            border: 1px solid #21262d;
-            border-radius: 6px;
-            padding: 16px;
-            font-size: 13px;
-            text-align: left;
+        .server-list {
             display: flex;
             flex-direction: column;
-            gap: 12px;
+            gap: 10px;
+            max-height: 300px;
+            overflow-y: auto;
+            margin-bottom: 20px;
         }
 
-        .info-row {
+        .server-card {
+            background: #0d0f12;
+            border: 1px solid #2a2f38;
+            padding: 14px;
+            border-radius: 6px;
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
 
-        .info-label {
+        .server-info h3 {
+            font-size: 15px;
+            color: #ffffff;
+            margin-bottom: 4px;
+        }
+
+        .server-info p {
+            font-size: 12px;
             color: #8b949e;
         }
 
-        .info-value {
-            color: #f0f6fc;
+        .badge {
+            background: rgba(88, 166, 255, 0.15);
+            color: #58a6ff;
+            border: 1px solid rgba(88, 166, 255, 0.4);
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 12px;
             font-weight: bold;
         }
-
-        .code-tag {
-            color: #ffd700;
-            background: rgba(255, 215, 0, 0.1);
-            padding: 2px 6px;
-            border-radius: 4px;
-            font-family: inherit;
-        }
     </style>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 </head>
 <body>
 
-    <div class="server-card">
-        <h1>JergBServer</h1>
-        <p class="subtitle">Official Node.js Backend for JergBuilder</p>
+    <div class="container">
+        <h1>JergBServer Browser</h1>
+        <p class="subtitle">Live Active Multiplayer Servers</p>
 
-        <div class="status-badge">
-            <span class="dot"></span> Online & Listening
-        </div>
-
-        <div class="info-box">
-            <div class="info-row">
-                <span class="info-label">Protocol:</span>
-                <span class="info-value">Socket.io / WebSockets</span>
-            </div>
-            <div class="info-row">
-                <span class="info-label">World Seed:</span>
-                <span class="info-value"><span class="code-tag">JergBuilder_Default</span></span>
-            </div>
-            <div class="info-row">
-                <span class="info-label">Map Size:</span>
-                <span class="info-value">32 x 32 Voxel Mesh</span>
-            </div>
-            <div class="info-row">
-                <span class="info-label">Player Model:</span>
-                <span class="info-value"><span class="code-tag">jergplr.glb</span></span>
-            </div>
-            <div class="info-row">
-                <span class="info-label">Target Release:</span>
-                <span class="info-value">August 6, 2026</span>
-            </div>
+        <div id="server-list" class="server-list">
+            <p style="text-align: center; color: #8b949e;">Fetching servers...</p>
         </div>
     </div>
 
+    <script>
+        const socket = io();
+        const serverListContainer = document.getElementById('server-list');
+
+        socket.on('serverListUpdate', (servers) => {
+            serverListContainer.innerHTML = '';
+            if (servers.length === 0) {
+                serverListContainer.innerHTML = '<p style="text-align: center; color: #8b949e;">No active servers.</p>';
+                return;
+            }
+
+            servers.forEach(srv => {
+                const card = document.createElement('div');
+                card.className = 'server-card';
+                card.innerHTML = `
+                    <div class="server-info">
+                        <h3>${srv.name}</h3>
+                        <p>Host: ${srv.host}</p>
+                    </div>
+                    <div class="badge">${srv.playerCount} / ${srv.maxPlayers} Players</div>
+                `;
+                serverListContainer.appendChild(card);
+            });
+        });
+    </script>
 </body>
 </html>
