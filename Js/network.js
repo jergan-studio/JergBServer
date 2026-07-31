@@ -2,47 +2,27 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 export class NetworkManager {
-    constructor(gameInstance, serverUrl = 'http://localhost:3000') {
-        this.game = gameInstance;
-        this.serverUrl = serverUrl;
+    constructor(game, serverUrl, username) {
+        this.game = game;
         this.remotePlayers = new Map();
         this.loader = new GLTFLoader();
 
-        this.initSocket();
+        // Connect socket & listeners
+        this.initSocket(serverUrl, username);
     }
 
-    initSocket() {
-        // Socket.io client script must be loaded in index.html
-        if (typeof io === 'undefined') {
-            console.error('Socket.io client script not found in index.html!');
-            return;
-        }
-
-        this.socket = io(this.serverUrl);
+    initSocket(serverUrl, username) {
+        this.socket = io(serverUrl);
 
         this.socket.on('connect', () => {
-            console.log('🌐 Connected to JergBServer!');
             this.socket.emit('playerJoin', {
+                username: username,
                 position: this.game.player.position,
                 rotation: { yaw: this.game.player.yaw, pitch: this.game.player.pitch }
             });
         });
 
-        // Load existing map modifications on join
-        this.socket.on('initialMapEdits', (edits) => {
-            for (let key in edits) {
-                const [x, y, z] = key.split(',').map(Number);
-                const edit = edits[key];
-                if (edit.type === 'place') {
-                    const mat = this.game.mapGenerator.materials[edit.material] || this.game.mapGenerator.materials.grass;
-                    this.game.mapGenerator.addBlock(x, y, z, mat);
-                } else if (edit.type === 'break') {
-                    this.game.mapGenerator.removeBlock(x, y, z);
-                }
-            }
-        });
-
-        // Receive current online players
+        // Handle existing players
         this.socket.on('currentPlayers', (players) => {
             for (let id in players) {
                 if (id !== this.socket.id) {
@@ -56,7 +36,7 @@ export class NetworkManager {
             this.addRemotePlayer(data.id, data);
         });
 
-        // Handle remote player moving
+        // Sync position & rotation
         this.socket.on('playerMoved', (data) => {
             const remote = this.remotePlayers.get(data.id);
             if (remote && remote.mesh) {
@@ -65,18 +45,7 @@ export class NetworkManager {
             }
         });
 
-        // Handle remote block placement
-        this.socket.on('blockPlaced', (data) => {
-            const mat = this.game.mapGenerator.materials[data.material] || this.game.mapGenerator.materials.grass;
-            this.game.mapGenerator.addBlock(data.x, data.y, data.z, mat);
-        });
-
-        // Handle remote block breaking
-        this.socket.on('blockBroken', (data) => {
-            this.game.mapGenerator.removeBlock(data.x, data.y, data.z);
-        });
-
-        // Handle player leaving
+        // Handle disconnects
         this.socket.on('playerDisconnected', (id) => {
             const remote = this.remotePlayers.get(id);
             if (remote && remote.mesh) {
@@ -84,52 +53,31 @@ export class NetworkManager {
             }
             this.remotePlayers.delete(id);
         });
-
-        // Hook into local block actions to send events to server
-        this.setupLocalEventHooks();
-    }
-
-    setupLocalEventHooks() {
-        this.game.on('onBlockPlace', (pos, matKey) => {
-            if (this.socket && this.socket.connected) {
-                this.socket.emit('blockPlace', { x: pos.x, y: pos.y, z: pos.z, material: matKey });
-            }
-        });
-
-        this.game.on('onBlockBreak', (pos) => {
-            if (this.socket && this.socket.connected) {
-                this.socket.emit('blockBreak', { x: pos.x, y: pos.y, z: pos.z });
-            }
-        });
     }
 
     addRemotePlayer(id, data) {
-        if (this.remotePlayers.has(id)) return;
+        // Direct raw URL to your jergplr.glb model
+        const modelUrl = 'https://raw.githubusercontent.com/jergan-studio/JergBServer/main/jergplr.glb';
 
-        const modelUrl = 'https://raw.githubusercontent.com/jergan-studio/JergBuilder/main/jergplr.glb';
         this.loader.load(modelUrl, (gltf) => {
-            const mesh = gltf.scene;
-            mesh.scale.set(0.5, 0.5, 0.5);
-            mesh.position.set(data.position.x, data.position.y, data.position.z);
-            this.game.scene.add(mesh);
+            const playerMesh = gltf.scene;
+            
+            // Adjust scale if the model is too big/small
+            playerMesh.scale.set(1, 1, 1); 
+            playerMesh.position.set(data.position.x, data.position.y, data.position.z);
 
-            this.remotePlayers.set(id, { mesh });
+            this.game.scene.add(playerMesh);
+            this.remotePlayers.set(id, { mesh: playerMesh, username: data.username });
+        }, undefined, (error) => {
+            console.error('Error loading player model:', error);
         });
     }
 
-    // Call this inside game loop to send local movement
     update() {
         if (this.socket && this.socket.connected && this.game.player) {
             this.socket.emit('playerMove', {
-                position: {
-                    x: this.game.player.position.x,
-                    y: this.game.player.position.y,
-                    z: this.game.player.position.z
-                },
-                rotation: {
-                    yaw: this.game.player.yaw,
-                    pitch: this.game.player.pitch
-                }
+                position: this.game.player.position,
+                rotation: { yaw: this.game.player.yaw, pitch: this.game.player.pitch }
             });
         }
     }
